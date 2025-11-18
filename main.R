@@ -30,6 +30,7 @@ model.function <- switch(
   "Four-parameter log-logistic" = "LL.4",
   "Michaelis-Menten" = "MM.2"
 )
+
 par_names <- switch(
   function.type,
   "Three-parameter log-logistic" = c("b", "d", "e"),
@@ -49,15 +50,12 @@ get_pseudo_r2 <- function(mod) {
   1 - rss/tss
 }
 
-limits <- c(0, maximum.x)
-x_rng <- range(dt_in$.x)
-x_rng[1] <- x_rng[1] / 2
-x_rng[2] <- x_rng[2] * 2
-if(x_rng[1] < limits[1]) limits[1] <- x_rng[1]
-if(x_rng[2] > limits[2]) limits[2] <- x_rng[2]
+# NOTE: Global limits calculation removed from here. 
+# It is safer to calculate limits relative to the specific subset of data in the loop.
 
 df_result <- dt_in[, 
   {
+      # 1. Fit the model
       mod <- try(drm(
         .y ~ .x, fct = match.fun(model.function)(), logDose = dt
       ), silent = TRUE)
@@ -67,21 +65,38 @@ df_result <- dt_in[,
         names(coef) <- gsub(pattern = ":\\(Intercept\\)", "", names(coef))
         out <- as.data.frame(t(coef))
         
+        # Generate Prediction Curve
         x.pred <- seq(min(.x), max(.x), length.out = n.predictions)
         y.pred <- predict(mod, newdata = data.frame(x.pred))
         out <- cbind(out, x.pred, y.pred)
         
         out["pseudo_R2"] <- get_pseudo_r2(mod)
         
+        # 2. Calculate Inverse Predictions (ED values)
         if(model.function %in% c("LL.3", "LL.4", "MM.2")) {
+          
+          # Optimization: Define search limits locally based on this group's data range
+          # Searching 0 to 1,000,000 for a curve spanning 0.1-10 is computationally dangerous
+          
+          rx <- range(.x, na.rm = TRUE)
+          # Ensure lower bound is > 0 for Log models to avoid log(0)=-Inf
+          lower_limit <- if(rx[1] <= 0) 1e-9 else rx[1] / 100
+          upper_limit <- min(rx[2] * 100, maximum.x) # Cap at Maximum X input
+          
+          local_limits <- c(lower_limit, upper_limit)
+          
           f <- function(x, y) y - predict(mod, data.frame(.x = x))[1]
+          
           for(i in response.output) {
             y_ed <- ifelse(
               relative.response & model.function == "LL.4",
               ((out$d[1] - out$c[1]) * i / 100) + out$c[1],
               out$d[1] * i / 100
             )
-            x <- try(uniroot(f, limits, y = y_ed)$root, silent = TRUE)
+            
+            # Use local_limits instead of global limits
+            x <- try(uniroot(f, local_limits, y = y_ed)$root, silent = TRUE)
+            
             if(inherits(x, 'try-error')) x <- NA_real_
             vn <- paste0("X", i)
             out[[paste0("X", i)]] <- x
@@ -89,18 +104,23 @@ df_result <- dt_in[,
           }
         }
       } else {
+        # Handle Failures
         if(length(unique(.y)) == 1) {
-          x.pred <- seq(min(.x), max(.x), length.out = n.predictions)
-          out <- data.frame(x.pred = x.pred, y.pred = .y[1])
-          out[paste0("X", response.output)] <- NA_real_
-          out[paste0("Y", response.output)] <- .y[1]
+           x.pred <- seq(min(.x), max(.x), length.out = n.predictions)
+           out <- data.frame(x.pred = x.pred, y.pred = .y[1])
+           out[paste0("X", response.output)] <- NA_real_
+           out[paste0("Y", response.output)] <- .y[1]
         } else {
-          out <- data.frame(x.pred = NA_real_, y.pred = NA_real_)
-          out[paste0("X", response.output)] <- NA_real_
-          out[paste0("Y", response.output)] <- NA_real_
+           out <- data.frame(x.pred = NA_real_, y.pred = NA_real_)
+           out[paste0("X", response.output)] <- NA_real_
+           out[paste0("Y", response.output)] <- NA_real_
         }
         out[par_names] <- NA_real_
         out["pseudo_R2"] <- NA_real_
+        # Ensure columns exist even on failure
+        out[paste0("X", response.output)] <- NA_real_
+        out[paste0("Y", response.output)] <- NA_real_
+        
         out <- out[c(par_names, "x.pred", "y.pred", "pseudo_R2", paste0("X", response.output), paste0("Y", response.output))]
       }
   out
@@ -108,8 +128,9 @@ df_result <- dt_in[,
 ]
 
 if(model.function == "LL.4") {
-  df_result <- df_result %>%
-    mutate(Span = d - c)
+  if("d" %in% names(df_result) && "c" %in% names(df_result)){
+    df_result <- df_result %>% mutate(Span = d - c)
+  }
 } 
 
 sum.table <- df_result %>%
