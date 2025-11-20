@@ -83,7 +83,10 @@ df_result <- dt_in[,
           if(rx[1] < 0) {
             # Log-scale data (e.g., LogM values): use additive margins
             log_span <- rx[2] - rx[1]
-            margin <- max(2, log_span * 0.5)  # At least 2 log units or 50% of span
+            # Scale margin based on transformation type to avoid huge multiplicative ranges
+            # For log10, convert margin to natural log scale to maintain same multiplicative range
+            margin_scale <- if(!is.null(dt)) log(dt) else 1  # log10: 2.3, ln: 1, none: 1
+            margin <- max(2, log_span * 0.5) / margin_scale
             lower_limit <- rx[1] - margin
             upper_limit <- rx[2] + margin
 
