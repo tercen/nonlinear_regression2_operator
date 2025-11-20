@@ -99,18 +99,33 @@ df_result <- dt_in[,
           local_limits <- c(lower_limit, upper_limit)
           
           f <- function(x, y) y - predict(mod, data.frame(.x = x))[1]
-          
+
           for(i in response.output) {
             y_ed <- ifelse(
               relative.response & model.function == "LL.4",
               ((out$d[1] - out$c[1]) * i / 100) + out$c[1],
               out$d[1] * i / 100
             )
-            
-            # Use local_limits instead of global limits
-            x <- try(uniroot(f, local_limits, y = y_ed)$root, silent = TRUE)
-            
-            if(inherits(x, 'try-error')) x <- NA_real_
+
+            # Check if root exists by testing function values at boundaries
+            f_lower <- try(f(local_limits[1], y_ed), silent = TRUE)
+            f_upper <- try(f(local_limits[2], y_ed), silent = TRUE)
+
+            # Only attempt uniroot if predictions work and function changes sign
+            if(!inherits(f_lower, 'try-error') &&
+               !inherits(f_upper, 'try-error') &&
+               !is.na(f_lower) && !is.na(f_upper) &&
+               is.finite(f_lower) && is.finite(f_upper) &&
+               sign(f_lower) != sign(f_upper)) {
+
+              # Use local_limits with iteration limit to prevent hanging
+              x <- try(uniroot(f, local_limits, y = y_ed, maxiter = 1000, tol = 1e-6)$root,
+                      silent = TRUE)
+              if(inherits(x, 'try-error')) x <- NA_real_
+            } else {
+              x <- NA_real_
+            }
+
             vn <- paste0("X", i)
             out[[paste0("X", i)]] <- x
             out[[paste0("Y", i)]] <- as.double(y_ed)
