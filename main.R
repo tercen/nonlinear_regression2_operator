@@ -16,7 +16,6 @@ n.predictions <- ctx$op.value('n.predictions', as.double, 100)
 response.output <- ctx$op.value('response.output', as.character, "50, 90, 99")
 response.output <- as.numeric(trimws(strsplit(response.output, ",")[[1]]))
 relative.response <- ctx$op.value('relative.response', as.logical, TRUE)
-maximum.x <- ctx$op.value('maximum.x', as.double, 1e6)
 
 dose.transformation <- ctx$op.value('dose.transformation', as.character, "None") # log10, none
 dt <- switch(dose.transformation,
@@ -76,13 +75,24 @@ df_result <- dt_in[,
         if(model.function %in% c("LL.3", "LL.4", "MM.2")) {
           
           # Optimization: Define search limits locally based on this group's data range
-          # Searching 0 to 1,000,000 for a curve spanning 0.1-10 is computationally dangerous
-          
+          # Use different strategies for log-scale vs raw dose data
+
           rx <- range(.x, na.rm = TRUE)
-          # Ensure lower bound is > 0 for Log models to avoid log(0)=-Inf
-          lower_limit <- if(rx[1] <= 0) 1e-9 else rx[1] / 100
-          upper_limit <- min(rx[2] * 100, maximum.x) # Cap at Maximum X input
-          
+
+          # Auto-detect if data is on log scale (has negative values)
+          if(rx[1] < 0) {
+            # Log-scale data (e.g., LogM values): use additive margins
+            log_span <- rx[2] - rx[1]
+            margin <- max(2, log_span * 0.5)  # At least 2 log units or 50% of span
+            lower_limit <- rx[1] - margin
+            upper_limit <- rx[2] + margin
+
+          } else {
+            # Positive raw dose values: use multiplicative margins
+            lower_limit <- if(rx[1] <= 0) 1e-9 else rx[1] / 100
+            upper_limit <- rx[2] * 100
+          }
+
           local_limits <- c(lower_limit, upper_limit)
           
           f <- function(x, y) y - predict(mod, data.frame(.x = x))[1]

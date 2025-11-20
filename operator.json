@@ -51,12 +51,6 @@
       "name": "relative.response",
       "defaultValue": false,
       "description": "Whether to compute absolute (default) or relative effective doses."
-    },
-    {
-      "kind": "DoubleProperty",
-      "name": "maximum.x",
-      "defaultValue": 1000000,
-      "description": "Maximum value for the estimation of effective doses."
     }
   ],
   "operatorSpec": {
