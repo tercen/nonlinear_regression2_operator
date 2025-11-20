@@ -23,6 +23,8 @@ dt <- switch(dose.transformation,
              Log10 = 10,
              None = NULL)
 
+cat("Using dose.transformation:", dose.transformation, "(dt =", dt, ")\n")
+
 model.function <- switch(
   function.type,
   "Three-parameter log-logistic" = "LL.3",
@@ -37,9 +39,11 @@ par_names <- switch(
   "Michaelis-Menten" = c("d", "e")
 )
 
-dt_in <- ctx %>% 
+dt_in <- ctx %>%
   dplyr::select(.x, .y, .ri, .ci) %>%
   data.table::as.data.table()
+
+cat("Total curves to process:", nrow(unique(dt_in[, c(".ri", ".ci")])), "\n")
 
 get_pseudo_r2 <- function(mod) {
   predicted <- mod$predres[, "Predicted values"]
@@ -49,11 +53,17 @@ get_pseudo_r2 <- function(mod) {
   1 - rss/tss
 }
 
-# NOTE: Global limits calculation removed from here. 
+# NOTE: Global limits calculation removed from here.
 # It is safer to calculate limits relative to the specific subset of data in the loop.
 
-df_result <- dt_in[, 
+curve_count <- 0
+df_result <- dt_in[,
   {
+      curve_count <<- curve_count + 1
+      if(curve_count %% 10 == 0) {
+        cat("Processing curve", curve_count, "(.ri =", .ri[1], ".ci =", .ci[1], ")\n")
+      }
+
       # 1. Fit the model
       mod <- try(drm(
         .y ~ .x, fct = match.fun(model.function)(), logDose = dt
@@ -81,12 +91,11 @@ df_result <- dt_in[,
 
           # Auto-detect if data is on log scale (has negative values)
           if(rx[1] < 0) {
-            # Log-scale data (e.g., LogM values): use additive margins
+            # Log-scale data (e.g., LogM values): use very conservative margins
             log_span <- rx[2] - rx[1]
-            # Scale margin based on transformation type to avoid huge multiplicative ranges
-            # For log10, convert margin to natural log scale to maintain same multiplicative range
-            margin_scale <- if(!is.null(dt)) log(dt) else 1  # log10: 2.3, ln: 1, none: 1
-            margin <- max(2, log_span * 0.5) / margin_scale
+            # Minimal extrapolation to avoid numerical issues with extreme values
+            # especially when using Log10 transformation
+            margin <- min(1, log_span * 0.1)  # At most 10% of span or 1 log unit
             lower_limit <- rx[1] - margin
             upper_limit <- rx[2] + margin
 
@@ -97,7 +106,17 @@ df_result <- dt_in[,
           }
 
           local_limits <- c(lower_limit, upper_limit)
-          
+
+          # Test if predict works at all within the search range
+          test_pred <- try(predict(mod, data.frame(.x = local_limits)), silent = TRUE)
+          predict_works <- !inherits(test_pred, 'try-error') &&
+                          all(is.finite(test_pred)) &&
+                          length(test_pred) == 2
+
+          if(!predict_works && curve_count %% 10 == 0) {
+            cat("  WARNING: predict failed at limits for curve", curve_count, "\n")
+          }
+
           f <- function(x, y) y - predict(mod, data.frame(.x = x))[1]
 
           for(i in response.output) {
@@ -106,6 +125,13 @@ df_result <- dt_in[,
               ((out$d[1] - out$c[1]) * i / 100) + out$c[1],
               out$d[1] * i / 100
             )
+
+            # Skip ED calculation if predict doesn't work reliably
+            if(!predict_works) {
+              out[[paste0("X", i)]] <- NA_real_
+              out[[paste0("Y", i)]] <- as.double(y_ed)
+              next
+            }
 
             # Check if root exists by testing function values at boundaries
             f_lower <- try(f(local_limits[1], y_ed), silent = TRUE)
@@ -154,6 +180,8 @@ df_result <- dt_in[,
   out
   }, by = c(".ri", ".ci")
 ]
+
+cat("Processing completed for all", curve_count, "curves\n")
 
 if(model.function == "LL.4") {
   if("d" %in% names(df_result) && "c" %in% names(df_result)){
